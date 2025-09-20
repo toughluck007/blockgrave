@@ -10,8 +10,8 @@ A retro-styled incremental simulation game that blends **cryptomining, stock tra
 - **Links**: Each mined unit of The Chain. Links are composed of smaller fragments that must be reconstructed.
 - **Linklets**: The atomic units of a Link. Each linklet has difficulty and must be solved to restore the whole Link.
 - **Hashpower Equivalent (TBD)**:
-  - Working theme: "Relinks" or "Bindings" (to tie into the rebuilding concept).
-  - Alternative terms: "Cycles," "Knots," or "Threads" (all tying into the Chain imagery).
+  - Working theme: "Relinks"
+  - Alternative terms (Relinks per second): "Rl/s" "kRl/s" "mRl/s" "gRl/s" "tRl/s" (tying into kilo-, mega-, giga-, tera-relinks per second, etc)
 - **Ledger**: A record of every Link mined, showing its ID, ownership history, and sale prices. Serves as both lore device and gameplay mechanic.
 
 ---
@@ -75,17 +75,6 @@ A retro-styled incremental simulation game that blends **cryptomining, stock tra
 - Market depth with ticker and stronger lore flavor.
 - Advanced upgrade tiers (labs, datacenters).
 - Hidden glyphs/linklets with special effects (e.g., market surge).
-
----
-
-## Naming Notes
-Potential titles:
-- **Blockgrave** (cryptic and ominous)
-- **Hashfade** (ties into fading/relinking theme)
-- **Silent Hash**
-- **The Foundry Protocol** (connects to your existing Foundry Twelve lore)
-- **Chainbound** (strong tie to the lore of rebuilding The Chain)
-- **Relinked** (direct tie-in to the restoration concept)
 
 ---
 
