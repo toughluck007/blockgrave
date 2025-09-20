@@ -1,14 +1,17 @@
 use std::collections::VecDeque;
+use std::fs;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Local, Utc};
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use nanoid::nanoid;
 use rand::rngs::StdRng;
 use rand::seq::SliceRandom;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, LogNormal};
+use serde::{Deserialize, Serialize};
 
 const MAX_MESSAGES: usize = 5;
 const JOB_POOL_SIZE: usize = 4;
@@ -16,8 +19,11 @@ const NANO_ALPHABET: &[char] = &[
     '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I',
     'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
 ];
+const SAVE_FILE: &str = "blockgrave-save.json";
+const PRICE_UPDATE_MIN_SECS: f64 = 5.0;
+const PRICE_UPDATE_MAX_SECS: f64 = 15.0;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaneFocus {
     Mining,
     Hashpower,
@@ -45,9 +51,77 @@ impl PaneFocus {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum PauseMenuItem {
+    Resume,
+    Save,
+    Load,
+    Quit,
+}
+
+impl PauseMenuItem {
+    pub fn label(self) -> &'static str {
+        match self {
+            PauseMenuItem::Resume => "Resume",
+            PauseMenuItem::Save => "Save",
+            PauseMenuItem::Load => "Load",
+            PauseMenuItem::Quit => "Exit",
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct PauseMenuState {
+    selected: usize,
+    status: Option<String>,
+}
+
+impl PauseMenuState {
+    const OPTIONS: [PauseMenuItem; 4] = [
+        PauseMenuItem::Resume,
+        PauseMenuItem::Save,
+        PauseMenuItem::Load,
+        PauseMenuItem::Quit,
+    ];
+
+    fn select_next(&mut self) {
+        self.selected = (self.selected + 1) % Self::OPTIONS.len();
+    }
+
+    fn select_previous(&mut self) {
+        if self.selected == 0 {
+            self.selected = Self::OPTIONS.len() - 1;
+        } else {
+            self.selected -= 1;
+        }
+    }
+
+    fn current(&self) -> PauseMenuItem {
+        Self::OPTIONS[self.selected]
+    }
+
+    pub fn items(&self) -> &'static [PauseMenuItem] {
+        &Self::OPTIONS
+    }
+
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    pub fn status(&self) -> Option<&String> {
+        self.status.as_ref()
+    }
+
+    pub fn set_status(&mut self, status: Option<String>) {
+        self.status = status;
+    }
+}
+
 pub struct App {
     pub focus: PaneFocus,
     pub should_quit: bool,
+    pub paused: bool,
+    pub pause_menu: PauseMenuState,
     pub mining: MiningState,
     pub hashpower: HashpowerState,
     pub bank: BankState,
@@ -71,19 +145,24 @@ impl App {
         Ok(Self {
             focus: PaneFocus::Mining,
             should_quit: false,
+            paused: false,
+            pause_menu: PauseMenuState::default(),
             mining,
             hashpower,
             bank: BankState::default(),
             ledger: LedgerState::default(),
-            ticker: TickerState::new(32.0),
+            ticker: TickerState::new(32.0, &mut rng),
             messages: VecDeque::new(),
             rng,
         })
     }
 
     pub fn on_tick(&mut self, dt: Duration) {
+        if self.paused {
+            return;
+        }
         let secs = dt.as_secs_f64();
-        self.ticker.update_price(&mut self.rng);
+        self.ticker.tick(dt, &mut self.rng);
 
         let power = self.hashpower.total_power();
         if let Some(completed) = self.mining.apply_work(power * secs) {
@@ -124,8 +203,17 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
+        if matches!(key.kind, KeyEventKind::Repeat) {
+            return;
+        }
+
+        if self.paused {
+            self.handle_pause_input(key);
+            return;
+        }
+
         if matches!(key.code, KeyCode::Char('q' | 'Q')) {
-            self.should_quit = true;
+            self.enter_pause();
             return;
         }
 
@@ -143,6 +231,16 @@ impl App {
                 PaneFocus::Ledger => self.handle_ledger_input(key),
             },
         }
+    }
+
+    fn enter_pause(&mut self) {
+        self.paused = true;
+        self.pause_menu.set_status(None);
+    }
+
+    fn resume(&mut self) {
+        self.paused = false;
+        self.pause_menu.set_status(None);
     }
 
     fn handle_mining_input(&mut self, key: KeyEvent) {
@@ -227,6 +325,66 @@ impl App {
             _ => {}
         }
     }
+
+    fn handle_pause_input(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Up => self.pause_menu.select_previous(),
+            KeyCode::Down => self.pause_menu.select_next(),
+            KeyCode::Enter => self.activate_pause_selection(),
+            KeyCode::Esc => self.resume(),
+            KeyCode::Char('q' | 'Q') => self.resume(),
+            _ => {}
+        }
+    }
+
+    fn activate_pause_selection(&mut self) {
+        match self.pause_menu.current() {
+            PauseMenuItem::Resume => self.resume(),
+            PauseMenuItem::Save => match self.save_game() {
+                Ok(()) => {
+                    self.pause_menu.set_status(Some("Game saved.".to_string()));
+                    self.push_message("Snapshot stored to disk.");
+                }
+                Err(err) => {
+                    self.pause_menu
+                        .set_status(Some(format!("Save failed: {}", err)));
+                    self.push_message(format!("Save error: {}", err));
+                }
+            },
+            PauseMenuItem::Load => match self.load_game() {
+                Ok(()) => {
+                    self.pause_menu.set_status(Some("Game loaded.".to_string()));
+                    self.push_message("Restored state from snapshot.");
+                }
+                Err(err) => {
+                    self.pause_menu
+                        .set_status(Some(format!("Load failed: {}", err)));
+                    self.push_message(format!("Load error: {}", err));
+                }
+            },
+            PauseMenuItem::Quit => {
+                self.should_quit = true;
+            }
+        }
+    }
+
+    fn save_game(&mut self) -> Result<()> {
+        let snapshot = SaveData::from_app(self);
+        let payload = serde_json::to_vec_pretty(&snapshot)?;
+        fs::write(SAVE_FILE, payload).with_context(|| format!("writing {}", SAVE_FILE))?;
+        Ok(())
+    }
+
+    fn load_game(&mut self) -> Result<()> {
+        if !Path::new(SAVE_FILE).exists() {
+            return Err(anyhow!("no save data available"));
+        }
+        let data = fs::read(SAVE_FILE).with_context(|| format!("reading {}", SAVE_FILE))?;
+        let snapshot: SaveData =
+            serde_json::from_slice(&data).context("parsing stored game state")?;
+        snapshot.apply(self)?;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -299,6 +457,24 @@ impl MiningState {
     fn shuffle_jobs(&mut self, rng: &mut StdRng) {
         self.available_jobs.shuffle(rng);
         self.selected_job = 0;
+    }
+
+    fn to_save(&self) -> MiningSave {
+        MiningSave {
+            available_jobs: self.available_jobs.clone(),
+            selected_job: self.selected_job,
+            active_job: self.active_job.as_ref().map(ActiveJobSave::from_active),
+        }
+    }
+
+    fn apply_save(&mut self, save: MiningSave) {
+        self.available_jobs = save.available_jobs;
+        if self.available_jobs.is_empty() {
+            self.selected_job = 0;
+        } else {
+            self.selected_job = save.selected_job.min(self.available_jobs.len() - 1);
+        }
+        self.active_job = save.active_job.map(ActiveJob::from_save);
     }
 }
 
@@ -385,6 +561,20 @@ impl ActiveJob {
     pub fn remaining_work(&self) -> f64 {
         self.linklets.iter().map(|l| l.remaining).sum()
     }
+
+    fn from_save(save: ActiveJobSave) -> Self {
+        let now = Instant::now();
+        let elapsed = Duration::from_secs_f64(save.elapsed_secs.max(0.0));
+        let started_at = now.checked_sub(elapsed).unwrap_or(now);
+        let linklets = save.linklets;
+        let len = linklets.len();
+        Self {
+            job: save.job,
+            linklets,
+            current_index: save.current_index.min(len),
+            started_at,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -394,7 +584,7 @@ pub enum LinkletStatus {
     Complete,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinkletProgress {
     pub difficulty: f64,
     pub remaining: f64,
@@ -416,7 +606,7 @@ pub struct CompletedJob {
     pub duration: Duration,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MiningJob {
     pub name: String,
     pub rows: usize,
@@ -504,6 +694,26 @@ impl HashpowerState {
         self.tiers.iter().map(|tier| tier.total_power()).sum()
     }
 
+    fn owned_counts(&self) -> Vec<u32> {
+        self.tiers.iter().map(|tier| tier.owned).collect()
+    }
+
+    fn apply_owned(&mut self, owned: &[u32], selected: usize) {
+        for (tier, &amount) in self.tiers.iter_mut().zip(owned.iter()) {
+            tier.owned = amount;
+        }
+        if owned.len() < self.tiers.len() {
+            for tier in self.tiers[owned.len()..].iter_mut() {
+                tier.owned = 0;
+            }
+        }
+        if self.tiers.is_empty() {
+            self.selected = 0;
+        } else {
+            self.selected = selected.min(self.tiers.len() - 1);
+        }
+    }
+
     fn select_next(&mut self) {
         self.selected = (self.selected + 1) % self.tiers.len();
     }
@@ -533,7 +743,7 @@ impl HashpowerState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BankState {
     pub chain_balance: f64,
     pub credits_balance: f64,
@@ -618,23 +828,48 @@ pub struct TickerState {
     pub price: f64,
     pub last_delta: f64,
     pub history: VecDeque<f64>,
+    time_since_update: Duration,
+    update_interval: Duration,
 }
 
 impl TickerState {
-    fn new(initial_price: f64) -> Self {
+    fn new(initial_price: f64, rng: &mut StdRng) -> Self {
         let mut history = VecDeque::new();
         history.push_back(initial_price);
         Self {
             price: initial_price,
             last_delta: 0.0,
             history,
+            time_since_update: Duration::ZERO,
+            update_interval: Self::roll_interval(rng),
         }
     }
 
-    fn update_price(&mut self, rng: &mut StdRng) {
-        let drift = rng.gen_range(-0.45..0.55);
-        let volatility = rng.gen_range(-0.35..0.35);
-        let delta = drift * 0.05 + volatility * 0.02;
+    fn tick(&mut self, dt: Duration, rng: &mut StdRng) {
+        self.time_since_update += dt;
+        while self.time_since_update >= self.update_interval {
+            self.time_since_update -= self.update_interval;
+            self.apply_random_walk(rng);
+            self.update_interval = Self::roll_interval(rng);
+        }
+    }
+
+    pub fn seconds_until_update(&self) -> f64 {
+        if self.time_since_update >= self.update_interval {
+            0.0
+        } else {
+            (self.update_interval - self.time_since_update).as_secs_f64()
+        }
+    }
+
+    fn roll_interval(rng: &mut StdRng) -> Duration {
+        Duration::from_secs_f64(rng.gen_range(PRICE_UPDATE_MIN_SECS..=PRICE_UPDATE_MAX_SECS))
+    }
+
+    fn apply_random_walk(&mut self, rng: &mut StdRng) {
+        let drift = rng.gen_range(-0.25..0.35);
+        let noise = rng.gen_range(-0.15..0.15);
+        let delta = drift * 0.012 + noise * 0.006;
         let new_price = (self.price * (1.0 + delta)).max(0.25);
         self.last_delta = new_price - self.price;
         self.price = new_price;
@@ -656,6 +891,37 @@ impl TickerState {
         while self.history.len() > 256 {
             self.history.pop_front();
         }
+    }
+
+    fn to_save(&self) -> TickerSave {
+        TickerSave {
+            price: self.price,
+            last_delta: self.last_delta,
+            history: self.history.iter().copied().collect(),
+            time_since_update_secs: self.time_since_update.as_secs_f64(),
+            update_interval_secs: self.update_interval.as_secs_f64(),
+        }
+    }
+
+    fn from_save(save: TickerSave) -> Self {
+        let mut history = VecDeque::from(save.history);
+        if history.is_empty() {
+            history.push_back(save.price);
+        }
+        let mut state = Self {
+            price: save.price,
+            last_delta: save.last_delta,
+            history,
+            time_since_update: Duration::from_secs_f64(save.time_since_update_secs.max(0.0)),
+            update_interval: Duration::from_secs_f64(
+                save.update_interval_secs
+                    .clamp(PRICE_UPDATE_MIN_SECS, PRICE_UPDATE_MAX_SECS),
+            ),
+        };
+        if state.time_since_update > state.update_interval {
+            state.time_since_update = state.update_interval;
+        }
+        state
     }
 }
 
@@ -771,4 +1037,139 @@ pub fn format_relings(power: f64) -> String {
         idx += 1;
     }
     format!("{:.2} {}", value, UNITS[idx].0)
+}
+
+#[derive(Serialize, Deserialize)]
+struct SaveData {
+    focus: PaneFocus,
+    mining: MiningSave,
+    hashpower_owned: Vec<u32>,
+    hashpower_selected: usize,
+    bank: BankState,
+    ledger: Vec<LedgerEntrySave>,
+    ledger_scroll: usize,
+    ticker: TickerSave,
+    messages: Vec<String>,
+}
+
+impl SaveData {
+    fn from_app(app: &App) -> Self {
+        Self {
+            focus: app.focus,
+            mining: app.mining.to_save(),
+            hashpower_owned: app.hashpower.owned_counts(),
+            hashpower_selected: app.hashpower.selected,
+            bank: app.bank.clone(),
+            ledger: app
+                .ledger
+                .entries
+                .iter()
+                .map(LedgerEntrySave::from_entry)
+                .collect(),
+            ledger_scroll: app.ledger.scroll,
+            ticker: app.ticker.to_save(),
+            messages: app.messages.iter().cloned().collect(),
+        }
+    }
+
+    fn apply(self, app: &mut App) -> Result<()> {
+        app.focus = self.focus;
+        app.mining.apply_save(self.mining);
+        app.hashpower
+            .apply_owned(&self.hashpower_owned, self.hashpower_selected);
+        app.bank = self.bank;
+        app.ledger.entries = self
+            .ledger
+            .into_iter()
+            .map(LedgerEntrySave::into_entry)
+            .collect::<Result<Vec<_>>>()?;
+        if app.ledger.entries.is_empty() {
+            app.ledger.scroll = 0;
+        } else {
+            app.ledger.scroll = self.ledger_scroll.min(app.ledger.entries.len() - 1);
+        }
+        app.ticker = TickerState::from_save(self.ticker);
+        app.messages = VecDeque::from(self.messages);
+        while app.messages.len() > MAX_MESSAGES {
+            app.messages.pop_back();
+        }
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct MiningSave {
+    available_jobs: Vec<MiningJob>,
+    selected_job: usize,
+    active_job: Option<ActiveJobSave>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ActiveJobSave {
+    job: MiningJob,
+    linklets: Vec<LinkletProgress>,
+    current_index: usize,
+    elapsed_secs: f64,
+}
+
+impl ActiveJobSave {
+    fn from_active(active: &ActiveJob) -> Self {
+        Self {
+            job: active.job.clone(),
+            linklets: active.linklets.clone(),
+            current_index: active.current_index,
+            elapsed_secs: active.started_at.elapsed().as_secs_f64(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct LedgerEntrySave {
+    id: String,
+    name: String,
+    finished_at_ms: i64,
+    difficulty: f64,
+    payout_chain: f64,
+    credits_at_completion: f64,
+    duration_secs: f64,
+    market_impact: f64,
+}
+
+impl LedgerEntrySave {
+    fn from_entry(entry: &LedgerEntry) -> Self {
+        Self {
+            id: entry.id.clone(),
+            name: entry.name.clone(),
+            finished_at_ms: entry.finished_at.timestamp_millis(),
+            difficulty: entry.difficulty,
+            payout_chain: entry.payout_chain,
+            credits_at_completion: entry.credits_at_completion,
+            duration_secs: entry.duration.as_secs_f64(),
+            market_impact: entry.market_impact,
+        }
+    }
+
+    fn into_entry(self) -> Result<LedgerEntry> {
+        let finished_at = DateTime::<Utc>::from_timestamp_millis(self.finished_at_ms)
+            .ok_or_else(|| anyhow!("invalid timestamp in save data"))?;
+        Ok(LedgerEntry {
+            id: self.id,
+            name: self.name,
+            finished_at,
+            difficulty: self.difficulty,
+            payout_chain: self.payout_chain,
+            credits_at_completion: self.credits_at_completion,
+            duration: Duration::from_secs_f64(self.duration_secs.max(0.0)),
+            market_impact: self.market_impact,
+        })
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+struct TickerSave {
+    price: f64,
+    last_delta: f64,
+    history: Vec<f64>,
+    time_since_update_secs: f64,
+    update_interval_secs: f64,
 }

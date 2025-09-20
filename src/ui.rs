@@ -3,7 +3,9 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::prelude::*;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Sparkline, Wrap,
+};
 use std::time::Duration;
 
 use crate::app::{
@@ -44,6 +46,10 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
 
     draw_ticker(f, footer[0], app);
     draw_footer(f, footer[1], app);
+
+    if app.paused {
+        draw_pause_overlay(f, app);
+    }
 }
 
 fn draw_mining(f: &mut Frame<'_>, area: Rect, app: &App) {
@@ -181,7 +187,7 @@ fn draw_contracts(f: &mut Frame<'_>, area: Rect, app: &App) {
                 Span::raw(format!("  {}x{}", job.rows, job.cols)),
                 Span::raw("  Δ"),
                 Span::raw(format!("{:.1}", job.difficulty)),
-                Span::raw("  ⛓"),
+                Span::raw("  ⛓ "),
                 Span::raw(format!("{:.2}", job.payout_chain)),
                 Span::raw("  η"),
                 Span::raw(format_duration(Duration::from_secs_f64(est))),
@@ -300,7 +306,7 @@ fn draw_bank(f: &mut Frame<'_>, area: Rect, app: &App) {
             Span::raw(")"),
         ]),
         Line::from(""),
-        Line::from("← sell 1 ⛓  |  → buy 1 ⛓  |  [B] buy 5  |  [M] sell 5"),
+        Line::from("← sell 1 chain  |  → buy 1 chain  |  [B] buy 5  |  [M] sell 5"),
     ];
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
@@ -345,7 +351,7 @@ fn build_ledger_item(entry: &LedgerEntry) -> ListItem<'static> {
         Span::styled(entry.id.clone(), Style::default().fg(Color::LightCyan)),
         Span::raw("  "),
         Span::styled(entry.name.clone(), Style::default().fg(Color::White)),
-        Span::raw("  ⛓"),
+        Span::raw("  ⛓ "),
         Span::styled(
             format!("{:.2}", entry.payout_chain),
             Style::default().fg(Color::White),
@@ -375,10 +381,22 @@ fn draw_ticker(f: &mut Frame<'_>, area: Rect, app: &App) {
         .title("Ticker")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Gray));
+    f.render_widget(block.clone(), area);
+    let inner = block.inner(area);
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+
     let mut spans = Vec::new();
     spans.push(Span::styled(
         format!("Chain {:.2}₵", app.ticker.price),
         Style::default().fg(Color::Yellow),
+    ));
+    spans.push(Span::raw("  |  "));
+    spans.push(Span::styled(
+        format!("Δ {}₵", format_price_delta(app.ticker.last_delta)),
+        Style::default().fg(Color::Gray),
     ));
     spans.push(Span::raw("  |  "));
     spans.push(Span::styled(
@@ -387,14 +405,51 @@ fn draw_ticker(f: &mut Frame<'_>, area: Rect, app: &App) {
     ));
     spans.push(Span::raw("  |  "));
     spans.push(Span::styled(
-        format!("⛓ {:.2}", app.bank.chain_balance),
+        format!("Holdings {:.2}", app.bank.chain_balance),
         Style::default().fg(Color::LightCyan),
     ));
+    spans.push(Span::raw("  |  "));
+    spans.push(Span::styled(
+        format!("Next {:.1}s", app.ticker.seconds_until_update()),
+        Style::default().fg(Color::LightMagenta),
+    ));
 
-    let paragraph = Paragraph::new(Line::from(spans)).alignment(Alignment::Left);
-    f.render_widget(block.clone(), area);
-    let inner = block.inner(area);
-    f.render_widget(paragraph, inner);
+    let header = Paragraph::new(Line::from(spans)).alignment(Alignment::Left);
+    f.render_widget(header, layout[0]);
+
+    if layout[1].height > 0 && layout[1].width > 0 {
+        let width = layout[1].width as usize;
+        let mut history: Vec<f64> = app
+            .ticker
+            .history
+            .iter()
+            .rev()
+            .take(width)
+            .copied()
+            .collect();
+        if !history.is_empty() {
+            history.reverse();
+            let min = history
+                .iter()
+                .fold(f64::INFINITY, |acc, value| acc.min(*value));
+            let max = history
+                .iter()
+                .fold(f64::NEG_INFINITY, |acc, value| acc.max(*value));
+            let range = (max - min).max(0.01);
+            let data: Vec<u64> = history
+                .into_iter()
+                .map(|value| (((value - min) / range) * 100.0).round().clamp(0.0, 100.0) as u64)
+                .collect();
+            let sparkline = Sparkline::default()
+                .data(&data)
+                .style(Style::default().fg(Color::LightGreen));
+            f.render_widget(sparkline, layout[1]);
+        } else {
+            let placeholder = Paragraph::new("Market data stabilising...")
+                .style(Style::default().fg(Color::DarkGray));
+            f.render_widget(placeholder, layout[1]);
+        }
+    }
 }
 
 fn draw_footer(f: &mut Frame<'_>, area: Rect, app: &App) {
@@ -411,11 +466,12 @@ fn draw_footer(f: &mut Frame<'_>, area: Rect, app: &App) {
         .split(inner);
 
     let instruction_lines = vec![
-        Line::from("Tab cycle focus | Q quit"),
+        Line::from("Tab cycle focus | Q pause"),
         Line::from("Mining: ↑↓ select  Enter accept  Ctrl+R reroll"),
         Line::from("Hashpower: ↑↓ focus tier  Enter purchase"),
         Line::from("Bank: ← sell → buy  B bulk buy  M bulk sell"),
         Line::from("Ledger: ↑↓ scroll"),
+        Line::from("Pause: ↑↓ select  Enter confirm  Esc resume"),
     ];
     let instruction = Paragraph::new(instruction_lines).wrap(Wrap { trim: true });
     f.render_widget(instruction, columns[0]);
@@ -432,6 +488,83 @@ fn draw_footer(f: &mut Frame<'_>, area: Rect, app: &App) {
     }
     let feed = Paragraph::new(message_lines).wrap(Wrap { trim: true });
     f.render_widget(feed, columns[1]);
+}
+
+fn draw_pause_overlay(f: &mut Frame<'_>, app: &App) {
+    let area = centered_rect(40, 50, f.size());
+    f.render_widget(Clear, area);
+
+    let block = Block::default()
+        .title(Span::styled(
+            "Paused",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan))
+        .style(Style::default().bg(Color::Black));
+    f.render_widget(block.clone(), area);
+    let inner = block.inner(area);
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(3)])
+        .split(inner);
+
+    let items: Vec<ListItem> = app
+        .pause_menu
+        .items()
+        .iter()
+        .map(|item| {
+            ListItem::new(Line::from(vec![Span::styled(
+                item.label(),
+                Style::default().fg(Color::White),
+            )]))
+        })
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(app.pause_menu.selected()));
+    let list = List::new(items).block(Block::default()).highlight_style(
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+    );
+    f.render_stateful_widget(list, layout[0], &mut state);
+
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(status) = app.pause_menu.status() {
+        lines.push(Line::from(vec![Span::styled(
+            status.clone(),
+            Style::default().fg(Color::LightCyan),
+        )]));
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from("↑↓ select  Enter confirm  Esc resume"));
+    let status = Paragraph::new(lines)
+        .alignment(Alignment::Center)
+        .wrap(Wrap { trim: true });
+    f.render_widget(status, layout[1]);
+}
+
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage((100 - percent_y) / 2),
+            Constraint::Percentage(percent_y),
+            Constraint::Percentage((100 - percent_y) / 2),
+        ])
+        .split(area);
+    let horizontal = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage((100 - percent_x) / 2),
+            Constraint::Percentage(percent_x),
+            Constraint::Percentage((100 - percent_x) / 2),
+        ])
+        .split(vertical[1]);
+    horizontal[1]
 }
 
 fn pane_block<'a>(title: &'a str, focused: bool) -> Block<'a> {
