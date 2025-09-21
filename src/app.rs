@@ -22,6 +22,8 @@ const NANO_ALPHABET: &[char] = &[
 const SAVE_FILE: &str = "blockgrave-save.json";
 const PRICE_UPDATE_MIN_SECS: f64 = 5.0;
 const PRICE_UPDATE_MAX_SECS: f64 = 15.0;
+const EXCHANGE_BUY_MULTIPLIER: f64 = 1.01;
+const EXCHANGE_SELL_MULTIPLIER: f64 = 0.99;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PaneFocus {
@@ -285,32 +287,37 @@ impl App {
         let price = self.ticker.price;
         match key.code {
             KeyCode::Left => {
-                if self.bank.sell_chain(1.0, price) {
-                    self.push_message(format!("Sold 1.0 ⛓ for {:.2}₵", price));
+                if let Some(proceeds) = self.bank.sell_chain(1.0, price) {
+                    self.push_message(format!(
+                        "Sold 1.0 ⛓ for {:.2}₵ ({:.2}₵/⛓)",
+                        proceeds, proceeds
+                    ));
                 }
             }
             KeyCode::Right => {
-                if self.bank.buy_chain(1.0, price) {
-                    self.push_message(format!("Bought 1.0 ⛓ for {:.2}₵", price));
+                if let Some(cost) = self.bank.buy_chain(1.0, price) {
+                    self.push_message(format!("Bought 1.0 ⛓ for {:.2}₵ ({:.2}₵/⛓)", cost, cost));
                 }
             }
             KeyCode::Char('m') => {
                 let amount = 5.0;
-                if self.bank.sell_chain(amount, price) {
+                if let Some(proceeds) = self.bank.sell_chain(amount, price) {
                     self.push_message(format!(
-                        "Market order: sold {:.1} ⛓ for {:.2}₵",
+                        "Market order: sold {:.1} ⛓ for {:.2}₵ ({:.2}₵/⛓)",
                         amount,
-                        price * amount
+                        proceeds,
+                        proceeds / amount
                     ));
                 }
             }
             KeyCode::Char('b') => {
                 let amount = 5.0;
-                if self.bank.buy_chain(amount, price) {
+                if let Some(cost) = self.bank.buy_chain(amount, price) {
                     self.push_message(format!(
-                        "Bulk order: bought {:.1} ⛓ for {:.2}₵",
+                        "Bulk order: bought {:.1} ⛓ for {:.2}₵ ({:.2}₵/⛓)",
                         amount,
-                        price * amount
+                        cost,
+                        cost / amount
                     ));
                 }
             }
@@ -622,13 +629,14 @@ pub struct MiningJob {
 pub struct HashpowerTier {
     pub name: &'static str,
     pub base_cost: f64,
+    pub cost_multiplier: f64,
     pub power: f64,
     pub owned: u32,
 }
 
 impl HashpowerTier {
     pub fn cost_for_next(&self) -> f64 {
-        let scaling = 1.15_f64.powi(self.owned as i32);
+        let scaling = self.cost_multiplier.powi(self.owned as i32);
         self.base_cost * scaling
     }
 
@@ -649,38 +657,72 @@ impl Default for HashpowerState {
             tiers: vec![
                 HashpowerTier {
                     name: "Processor",
-                    base_cost: 60.0,
+                    base_cost: 75.0,
+                    cost_multiplier: 1.18,
                     power: 1.0,
                     owned: 0,
                 },
                 HashpowerTier {
                     name: "Server",
-                    base_cost: 320.0,
+                    base_cost: 420.0,
+                    cost_multiplier: 1.20,
                     power: 4.0,
                     owned: 0,
                 },
                 HashpowerTier {
                     name: "Rack",
-                    base_cost: 1500.0,
+                    base_cost: 2100.0,
+                    cost_multiplier: 1.22,
                     power: 18.0,
                     owned: 0,
                 },
                 HashpowerTier {
                     name: "Lab",
-                    base_cost: 6200.0,
-                    power: 70.0,
+                    base_cost: 9500.0,
+                    cost_multiplier: 1.24,
+                    power: 65.0,
                     owned: 0,
                 },
                 HashpowerTier {
                     name: "Supercomputer",
-                    base_cost: 24000.0,
-                    power: 240.0,
+                    base_cost: 38000.0,
+                    cost_multiplier: 1.26,
+                    power: 220.0,
                     owned: 0,
                 },
                 HashpowerTier {
                     name: "Datacenter",
-                    base_cost: 95000.0,
-                    power: 960.0,
+                    base_cost: 150000.0,
+                    cost_multiplier: 1.28,
+                    power: 800.0,
+                    owned: 0,
+                },
+                HashpowerTier {
+                    name: "Quantum Array",
+                    base_cost: 620000.0,
+                    cost_multiplier: 1.31,
+                    power: 3000.0,
+                    owned: 0,
+                },
+                HashpowerTier {
+                    name: "Orbital Node",
+                    base_cost: 2_400_000.0,
+                    cost_multiplier: 1.34,
+                    power: 10_500.0,
+                    owned: 0,
+                },
+                HashpowerTier {
+                    name: "Darknet Farm",
+                    base_cost: 8_600_000.0,
+                    cost_multiplier: 1.38,
+                    power: 34_000.0,
+                    owned: 0,
+                },
+                HashpowerTier {
+                    name: "Foundry Core",
+                    base_cost: 28_000_000.0,
+                    cost_multiplier: 1.42,
+                    power: 120_000.0,
                     owned: 0,
                 },
             ],
@@ -759,25 +801,26 @@ impl Default for BankState {
 }
 
 impl BankState {
-    pub fn sell_chain(&mut self, amount: f64, price: f64) -> bool {
-        if self.chain_balance + 1e-6 >= amount {
-            self.chain_balance -= amount;
-            self.credits_balance += amount * price;
-            true
-        } else {
-            false
+    pub fn sell_chain(&mut self, amount: f64, market_price: f64) -> Option<f64> {
+        if self.chain_balance + 1e-6 < amount {
+            return None;
         }
+        let unit_price = market_price * EXCHANGE_SELL_MULTIPLIER;
+        let proceeds = amount * unit_price;
+        self.chain_balance -= amount;
+        self.credits_balance += proceeds;
+        Some(proceeds)
     }
 
-    pub fn buy_chain(&mut self, amount: f64, price: f64) -> bool {
-        let cost = amount * price;
-        if self.credits_balance + 1e-6 >= cost {
-            self.credits_balance -= cost;
-            self.chain_balance += amount;
-            true
-        } else {
-            false
+    pub fn buy_chain(&mut self, amount: f64, market_price: f64) -> Option<f64> {
+        let unit_price = market_price * EXCHANGE_BUY_MULTIPLIER;
+        let cost = amount * unit_price;
+        if self.credits_balance + 1e-6 < cost {
+            return None;
         }
+        self.credits_balance -= cost;
+        self.chain_balance += amount;
+        Some(cost)
     }
 }
 
@@ -935,9 +978,14 @@ fn generate_job(rng: &mut StdRng) -> MiningJob {
         "Silent",
         "Echoing",
         "Cascading",
+        "Prismatic",
+        "Encrypted",
+        "Obsidian",
+        "Harmonic",
     ];
     const NOUNS: &[&str] = &[
-        "Segment", "Archive", "Spindle", "Glyph", "Node", "Fragment", "Shard", "Atlas",
+        "Segment", "Archive", "Spindle", "Glyph", "Node", "Fragment", "Shard", "Atlas", "Conduit",
+        "Vault", "Kernel", "Beacon",
     ];
     const LORE: &[&str] = &[
         "Ancient checksum mismatch logs recur in the metadata.",
@@ -946,6 +994,11 @@ fn generate_job(rng: &mut StdRng) -> MiningJob {
         "NPC chatter suggests this shard triggered a market spike decades ago.",
         "An abandoned relay stamped 'BLOCKGRAVE' is encoded in the payload.",
         "Hidden comment references a broken covenant between miners.",
+        "Telemetry pings from an Orbital Node still reference this checksum.",
+        "A Darknet broker swears this fragment bankrolls quantum rent strikes.",
+        "Foundry Core schematics mark this link as a stabiliser conduit.",
+        "The Null Archivist left an apology packet hidden in the footer.",
+        "Quantum foreman chatter hints at an unfinished ritual encoded here.",
     ];
 
     let adjective = ADJECTIVES[rng.gen_range(0..ADJECTIVES.len())];

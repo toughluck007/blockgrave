@@ -127,21 +127,33 @@ fn build_active_job_lines(active: &ActiveJob, power: f64) -> Vec<Line<'static>> 
     lines.push(Line::from(""));
 
     let statuses = active.status_map();
+    const GLYPHS: [char; 5] = ['·', '░', '▒', '▓', '█'];
     for row in 0..job.rows {
-        let mut buffer = String::new();
+        let mut spans = Vec::new();
         for col in 0..job.cols {
             let idx = row * job.cols + col;
-            let ch = match statuses[idx] {
-                LinkletStatus::Complete => '✓',
-                LinkletStatus::Active => '▒',
-                LinkletStatus::Pending => '·',
+            let linklet = &active.linklets[idx];
+            let progress = if linklet.difficulty <= f64::EPSILON {
+                1.0
+            } else {
+                1.0 - (linklet.remaining / linklet.difficulty).clamp(0.0, 1.0)
             };
-            buffer.push(ch);
+            let glyph_index = ((progress * ((GLYPHS.len() - 1) as f64)).round() as usize)
+                .clamp(0, GLYPHS.len() - 1);
+            let glyph = GLYPHS[glyph_index];
+            let style = match statuses[idx] {
+                LinkletStatus::Complete => Style::default().fg(Color::LightGreen),
+                LinkletStatus::Active => Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+                LinkletStatus::Pending => Style::default().fg(Color::DarkGray),
+            };
+            spans.push(Span::styled(glyph.to_string(), style));
             if col + 1 < job.cols {
-                buffer.push(' ');
+                spans.push(Span::raw(" "));
             }
         }
-        lines.push(Line::from(buffer));
+        lines.push(Line::from(spans));
     }
 
     lines.push(Line::from(""));
@@ -239,25 +251,36 @@ fn draw_hashpower(f: &mut Frame<'_>, area: Rect, app: &App) {
         .tiers
         .iter()
         .map(|tier| {
+            let owned_style = if tier.owned > 0 {
+                Style::default().fg(Color::LightGreen)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            let total_power = format_relings(tier.total_power());
+            let unit_power = format_relings(tier.power);
             let content = Line::from(vec![
-                Span::styled(
-                    format!("{:>2}×", tier.owned),
-                    Style::default().fg(if tier.owned > 0 {
-                        Color::LightGreen
-                    } else {
-                        Color::DarkGray
-                    }),
-                ),
+                Span::styled(format!("{:>2}×", tier.owned), owned_style),
                 Span::raw(" "),
                 Span::styled(
-                    format!("{:<12}", tier.name),
+                    format!("{:<14}", tier.name),
                     Style::default().fg(Color::White),
                 ),
-                Span::raw(format!(" {:>6.2} Rl/s", tier.total_power())),
-                Span::raw("  next:"),
+                Span::styled(
+                    format!(" {:>10}", total_power),
+                    Style::default().fg(Color::LightGreen),
+                ),
+                Span::raw(" total"),
+                Span::raw("  +"),
+                Span::styled(unit_power, Style::default().fg(Color::Gray)),
+                Span::raw("/ea  next:"),
                 Span::styled(
                     format!(" {:.2}₵", tier.cost_for_next()),
                     Style::default().fg(Color::LightCyan),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    format!("×{:.2}", tier.cost_multiplier),
+                    Style::default().fg(Color::DarkGray),
                 ),
             ]);
             ListItem::new(vec![content])
@@ -307,6 +330,7 @@ fn draw_bank(f: &mut Frame<'_>, area: Rect, app: &App) {
         ]),
         Line::from(""),
         Line::from("← sell 1 chain  |  → buy 1 chain  |  [B] buy 5  |  [M] sell 5"),
+        Line::from("Spread 1%: sells settle at 0.99×, buys at 1.01× market."),
     ];
 
     let paragraph = Paragraph::new(lines).wrap(Wrap { trim: true });
