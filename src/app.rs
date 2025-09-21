@@ -203,7 +203,7 @@ impl App {
     }
 
     pub fn on_key(&mut self, key: KeyEvent) {
-        if matches!(key.kind, KeyEventKind::Repeat) {
+        if !matches!(key.kind, KeyEventKind::Press) {
             return;
         }
 
