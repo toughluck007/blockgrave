@@ -8,10 +8,14 @@ use std::time::Duration;
 
 use anyhow::Result;
 use app::App;
+use crossterm::event::{self, Event as CEvent, PopKeyboardEnhancementFlags};
+#[cfg(not(windows))]
+use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+
 use crossterm::event::{
     self, Event as CEvent, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
-};
+    PushKeyboardEnhancementFlags,};
+
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -37,6 +41,9 @@ fn main() -> Result<()> {
 fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, bool)> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
+    execute!(&mut stdout, EnterAlternateScreen)?;
+    let keyboard_enhanced = try_enable_keyboard_enhancement(&mut stdout)?;
+
 
     execute!(&mut stdout, EnterAlternateScreen)?;
     let keyboard_enhanced = try_enable_keyboard_enhancement(&mut stdout)?;
@@ -46,6 +53,7 @@ fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, bool)> {
         EnterAlternateScreen,
         PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES),
     )?;
+
 
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
@@ -73,6 +81,13 @@ fn restore_terminal(
     Ok(())
 }
 
+
+#[cfg(windows)]
+fn try_enable_keyboard_enhancement(_: &mut Stdout) -> Result<bool> {
+    Ok(false)
+}
+
+#[cfg(not(windows))]
 fn try_enable_keyboard_enhancement(stdout: &mut Stdout) -> Result<bool> {
     let result = execute!(
         stdout,
@@ -91,7 +106,11 @@ fn try_enable_keyboard_enhancement(stdout: &mut Stdout) -> Result<bool> {
     Ok(keyboard_enhanced)
 }
 
+
+#[cfg(not(windows))]
+
 #[cfg(windows)]
+
 fn keyboard_enhancement_unsupported(err: &std::io::Error) -> bool {
     use std::io::ErrorKind;
 
@@ -100,6 +119,7 @@ fn keyboard_enhancement_unsupported(err: &std::io::Error) -> bool {
             .to_string()
             .contains("Keyboard progressive enhancement not implemented")
 }
+
 
 #[cfg(not(windows))]
 fn keyboard_enhancement_unsupported(_: &std::io::Error) -> bool {
