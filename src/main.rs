@@ -8,7 +8,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use app::App;
-use crossterm::event::{self, Event as CEvent};
+use crossterm::event::{
+    self, Event as CEvent, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -25,26 +28,66 @@ enum Event<I> {
 
 fn main() -> Result<()> {
     let mut app = App::new()?;
-    let mut terminal = setup_terminal()?;
+    let (mut terminal, keyboard_enhanced) = setup_terminal()?;
     let res = run_app(&mut terminal, &mut app);
-    restore_terminal(&mut terminal)?;
+    restore_terminal(&mut terminal, keyboard_enhanced)?;
     res
 }
 
-fn setup_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
+fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, bool)> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(&mut stdout, EnterAlternateScreen)?;
+    let keyboard_enhanced = try_enable_keyboard_enhancement(&mut stdout)?;
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
-    Ok(terminal)
+    Ok((terminal, keyboard_enhanced))
 }
 
-fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> Result<()> {
+fn restore_terminal(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    keyboard_enhanced: bool,
+) -> Result<()> {
     disable_raw_mode()?;
+    if keyboard_enhanced {
+        execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags)?;
+    }
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+fn try_enable_keyboard_enhancement(stdout: &mut Stdout) -> Result<bool> {
+    let result = execute!(
+        stdout,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES),
+    );
+    let keyboard_enhanced = match result {
+        Ok(()) => true,
+        Err(err) => {
+            if keyboard_enhancement_unsupported(&err) {
+                false
+            } else {
+                return Err(err.into());
+            }
+        }
+    };
+    Ok(keyboard_enhanced)
+}
+
+#[cfg(windows)]
+fn keyboard_enhancement_unsupported(err: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+
+    err.kind() == ErrorKind::Unsupported
+        || err
+            .to_string()
+            .contains("Keyboard progressive enhancement not implemented")
+}
+
+#[cfg(not(windows))]
+fn keyboard_enhancement_unsupported(_: &std::io::Error) -> bool {
+    false
 }
 
 fn run_app(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) -> Result<()> {
