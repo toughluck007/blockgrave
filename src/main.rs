@@ -37,8 +37,16 @@ fn main() -> Result<()> {
 fn setup_terminal() -> Result<(Terminal<CrosstermBackend<Stdout>>, bool)> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
+
     execute!(&mut stdout, EnterAlternateScreen)?;
     let keyboard_enhanced = try_enable_keyboard_enhancement(&mut stdout)?;
+
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES),
+    )?;
+
     let backend = CrosstermBackend::new(stdout);
     let terminal = Terminal::new(backend)?;
     Ok((terminal, keyboard_enhanced))
@@ -49,10 +57,18 @@ fn restore_terminal(
     keyboard_enhanced: bool,
 ) -> Result<()> {
     disable_raw_mode()?;
+
     if keyboard_enhanced {
         execute!(terminal.backend_mut(), PopKeyboardEnhancementFlags)?;
     }
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+
+    execute!(
+        terminal.backend_mut(),
+        PopKeyboardEnhancementFlags,
+        LeaveAlternateScreen,
+    )?;
+
     terminal.show_cursor()?;
     Ok(())
 }
