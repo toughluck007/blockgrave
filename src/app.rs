@@ -795,7 +795,7 @@ impl Default for BankState {
     fn default() -> Self {
         Self {
             chain_balance: 0.0,
-            credits_balance: 500.0,
+            credits_balance: 100.0,
         }
     }
 }
@@ -970,28 +970,49 @@ impl TickerState {
 
 fn generate_job(rng: &mut StdRng) -> MiningJob {
     const ADJECTIVES: &[&str] = &[
-        "Fractured",
-        "Dim",
-        "Sharded",
-        "Glitched",
-        "Ghost",
-        "Silent",
-        "Echoing",
-        "Cascading",
-        "Prismatic",
-        "Encrypted",
-        "Obsidian",
-        "Harmonic",
-    ];
+    "Fractured", "Dim", "Sharded", "Glitched", "Ghost", "Silent", "Echoing", "Cascading",
+    "Prismatic", "Encrypted", "Obsidian", "Harmonic",
+    "Errant", "Flickering", "Hollow", "Recursive", "Spectral", "Jagged", "Volatile", "Drifting",
+    "Lucid", "Null", "Resonant", "Entropic",
+    // new crypto-occult
+    "Forked",
+    "Haunted",
+    "Burned",
+    "Ancestral",
+    "Ledgerbound",
+    "Spectral",
+    "Cursed",
+    "Transient",
+    "Byzantine",
+    "Hallowed",
+    "Orphaned",
+    "Immutable",
+];
+
     const NOUNS: &[&str] = &[
-        "Segment", "Archive", "Spindle", "Glyph", "Node", "Fragment", "Shard", "Atlas", "Conduit",
-        "Vault", "Kernel", "Beacon",
-    ];
+    "Segment", "Archive", "Spindle", "Glyph", "Node", "Fragment", "Shard", "Atlas", "Conduit",
+    "Vault", "Kernel", "Beacon",
+    "Ledger", "Relic", "Circuit", "Echo", "Phantom", "Codex", "Anchor", "Relay", "Cipher",
+    "Obelisk", "Tomb", "Vector",
+    // new crypto-occult
+    "Domain",
+    "Epoch",
+    "Oracle",
+    "Burn Address",
+    "Hash",
+    "Mnemonic",
+    "Witness",
+    "Oblivion",
+    "Saint",
+    "Consensus",
+    "Daemon",
+    "Halving",
+];
     const LORE: &[&str] = &[
         "Ancient checksum mismatch logs recur in the metadata.",
         "Ledger note claims this link once belonged to the Archivist.",
         "The fragment hums at low frequencies when restored.",
-        "NPC chatter suggests this shard triggered a market spike decades ago.",
+        "OSINT chatter suggests this shard triggered a market spike decades ago.",
         "An abandoned relay stamped 'BLOCKGRAVE' is encoded in the payload.",
         "Hidden comment references a broken covenant between miners.",
         "Telemetry pings from an Orbital Node still reference this checksum.",
@@ -999,6 +1020,31 @@ fn generate_job(rng: &mut StdRng) -> MiningJob {
         "Foundry Core schematics mark this link as a stabiliser conduit.",
         "The Null Archivist left an apology packet hidden in the footer.",
         "Quantum foreman chatter hints at an unfinished ritual encoded here.",
+        "Obsolete syscalls still loop when this node is queried.",
+        "An encrypted diary fragment maps trade routes through dead space.",
+        "The checksum aligns with a forgotten guild’s initiation rites.",
+        "Deep cache inspection reveals timestamps older than the chain itself.",
+        "Data-miners whisper this archive once looped the whole market.",
+        "A phantom transaction ID resurfaces every equinox cycle.",
+        "Broken glyphs resemble prayers to a machine-saint.",
+        "Sector cartographers note this vector bends in non-Euclidean paths.",
+        "The echo of a relay collapse is still trapped in its logs.",
+        "Packet sniffers detect laughter embedded in corrupted frames.",
+        "A genesis block fragment bleeds through the checksum, signed by no known miner.",
+        "Obelisk engravings match hash outputs from a lost forked chain.",
+        "The Null Archivist’s covenant required burning coins to prove loyalty.",
+        "Forked ledgers in this shard contradict every known consensus protocol.",
+        "Ghost miners still broadcast shares to this phantom pool.",
+        "A forgotten saint of code is named in corrupted transaction notes.",
+        "Some claim this anchor wallet drains value every lunar cycle.",
+        "Consensus rites were once chanted in machine-halls around this relic.",
+        "A worm-eaten codex reveals rituals for binding hashes into prayer.",
+        "This beacon’s logs oscillate between laughter and market orders.",
+        "Miners whisper the shard was staked to summon liquidity apparitions.",
+        "An orphan block here encodes a hymn to the Overseer of Chains.",
+        "Hexed glyphs on the relay resemble burn addresses etched in ash.",
+        "An abandoned vault pulses as if waiting for a final signature.",
+        "Market prophets swore this vector predicted halvings centuries early.",
     ];
 
     let adjective = ADJECTIVES[rng.gen_range(0..ADJECTIVES.len())];
