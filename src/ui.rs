@@ -14,15 +14,10 @@ use crate::app::{
 };
 
 pub fn draw(f: &mut Frame<'_>, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(5)])
-        .split(f.size());
-
     let main_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(chunks[0]);
+        .split(f.size());
 
     let left_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -34,18 +29,16 @@ pub fn draw(f: &mut Frame<'_>, app: &App) {
         .constraints([Constraint::Percentage(40), Constraint::Percentage(60)])
         .split(main_chunks[1]);
 
+    let lower_right = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(right_chunks[1]);
+
     draw_mining(f, left_chunks[0], app);
     draw_bank(f, left_chunks[1], app);
     draw_hashpower(f, right_chunks[0], app);
-    draw_ledger(f, right_chunks[1], app);
-
-    let footer = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(2), Constraint::Length(3)])
-        .split(chunks[1]);
-
-    draw_ticker(f, footer[0], app);
-    draw_footer(f, footer[1], app);
+    draw_ledger(f, lower_right[0], app);
+    draw_ticker(f, lower_right[1], app);
 
     if app.paused {
         draw_pause_overlay(f, app);
@@ -277,11 +270,6 @@ fn draw_hashpower(f: &mut Frame<'_>, area: Rect, app: &App) {
                     format!(" {:.2}₵", tier.cost_for_next()),
                     Style::default().fg(Color::LightCyan),
                 ),
-                Span::raw(" "),
-                Span::styled(
-                    format!("×{:.2}", tier.cost_multiplier),
-                    Style::default().fg(Color::DarkGray),
-                ),
             ]);
             ListItem::new(vec![content])
         })
@@ -409,7 +397,11 @@ fn draw_ticker(f: &mut Frame<'_>, area: Rect, app: &App) {
     let inner = block.inner(area);
     let layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Percentage(50),
+            Constraint::Percentage(50),
+        ])
         .split(inner);
 
     let mut spans = Vec::new();
@@ -474,44 +466,21 @@ fn draw_ticker(f: &mut Frame<'_>, area: Rect, app: &App) {
             f.render_widget(placeholder, layout[1]);
         }
     }
-}
 
-fn draw_footer(f: &mut Frame<'_>, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title("Ops & Feed")
-        .border_style(Style::default().fg(Color::Gray));
-    f.render_widget(block.clone(), area);
-    let inner = block.inner(area);
-
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-        .split(inner);
-
-    let instruction_lines = vec![
-        Line::from("Tab cycle focus | Q pause"),
-        Line::from("Mining: ↑↓ select  Enter accept  Ctrl+R reroll"),
-        Line::from("Hashpower: ↑↓ focus tier  Enter purchase"),
-        Line::from("Bank: ← sell → buy  B bulk buy  M bulk sell"),
-        Line::from("Ledger: ↑↓ scroll"),
-        Line::from("Pause: ↑↓ select  Enter confirm  Esc resume"),
-    ];
-    let instruction = Paragraph::new(instruction_lines).wrap(Wrap { trim: true });
-    f.render_widget(instruction, columns[0]);
-
-    let mut message_lines: Vec<Line> = Vec::new();
-    for msg in app.messages.iter() {
-        message_lines.push(Line::from(Span::raw(msg.clone())));
+    if layout[2].height > 0 {
+        let mut message_lines: Vec<Line> = Vec::new();
+        for msg in app.messages.iter() {
+            message_lines.push(Line::from(Span::raw(msg.clone())));
+        }
+        if message_lines.is_empty() {
+            message_lines.push(Line::from(Span::styled(
+                "Awaiting signal...",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        let feed = Paragraph::new(message_lines).wrap(Wrap { trim: true });
+        f.render_widget(feed, layout[2]);
     }
-    if message_lines.is_empty() {
-        message_lines.push(Line::from(Span::styled(
-            "Awaiting signal...",
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-    let feed = Paragraph::new(message_lines).wrap(Wrap { trim: true });
-    f.render_widget(feed, columns[1]);
 }
 
 fn draw_pause_overlay(f: &mut Frame<'_>, app: &App) {
@@ -565,8 +534,14 @@ fn draw_pause_overlay(f: &mut Frame<'_>, app: &App) {
         lines.push(Line::from(""));
     }
     lines.push(Line::from("↑↓ select  Enter confirm  Esc resume"));
+    lines.push(Line::from(""));
+    lines.push(Line::from("Tab cycle focus  |  Q pause"));
+    lines.push(Line::from("Mining: ↑↓ select  Enter accept  Ctrl+R reroll"));
+    lines.push(Line::from("Hashpower: ↑↓ focus tier  Enter purchase"));
+    lines.push(Line::from("Bank: ← sell  → buy  B bulk buy  M bulk sell"));
+    lines.push(Line::from("Ledger: ↑↓ scroll"));
     let status = Paragraph::new(lines)
-        .alignment(Alignment::Center)
+        .alignment(Alignment::Left)
         .wrap(Wrap { trim: true });
     f.render_widget(status, layout[1]);
 }
